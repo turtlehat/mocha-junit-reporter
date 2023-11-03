@@ -71,6 +71,7 @@ function configureDefaults(options) {
   config.toConsole = !!config.toConsole;
   config.rootSuiteTitle = config.rootSuiteTitle || 'Root Suite';
   config.testsuitesTitle = config.testsuitesTitle || 'Mocha Tests';
+  config.parallel = options.parallel || false;
 
   if (config.antMode) {
     updateOptionsForAntMode(config);
@@ -151,8 +152,8 @@ function fullSuiteTitle(suite) {
   return stripAnsi(title.join(this._options.suiteTitleSeparatedBy));
 }
 
-function isInvalidSuite(suite) {
-  return (!suite.root && suite.title === '') || (suite.tests.length === 0 && suite.suites.length === 0);
+function isInvalidSuite(suite, options) {
+  return !options.parallel && ((!suite.root && suite.title === '') || (suite.tests.length === 0 && suite.suites.length === 0));
 }
 
 function parsePropertiesFromEnv(envValue) {
@@ -194,6 +195,14 @@ function getJenkinsClassname (test, options) {
   return titles.join(options.suiteTitleSeparatedBy);
 }
 
+function getTestSuiteCases(testsuite, options) {
+  var hasProperties = (!!options.properties) || options.antMode;
+  // testsuite is an array: [attrs, properties?, testcase, testcase, …]
+  // we want to make sure that we are grabbing test cases at the correct index
+  var _casesIndex = hasProperties ? 2 : 1;
+  return testsuite.slice(_casesIndex);
+}
+
 /**
  * JUnit reporter for mocha.js.
  * @module mocha-junit-reporter
@@ -229,7 +238,7 @@ function MochaJUnitReporter(runner, options) {
   }.bind(this));
 
   this._onSuiteBegin = function(suite) {
-    if (!isInvalidSuite(suite)) {
+    if (!isInvalidSuite(suite, this._options)) {
       testsuites.push(this.getTestsuiteData(suite));
     }
   };
@@ -240,9 +249,16 @@ function MochaJUnitReporter(runner, options) {
   }.bind(this));
 
   this._onSuiteEnd = function(suite) {
-    if (!isInvalidSuite(suite)) {
+    if (!isInvalidSuite(suite, this._options)) {
       var testsuite = lastSuite();
+
       if (testsuite) {
+        if (this._options.parallel) {
+          var _cases = getTestSuiteCases(testsuite, this._options);
+          testsuite[0]._attr.tests = _cases.length;
+          testsuite[0]._attr.file = _cases[0].testcase[0]._file;
+        }
+
         var start = testsuite[0]._attr.timestamp;
         testsuite[0]._attr.time = this._Date.now() - start;
       }
@@ -287,7 +303,7 @@ MochaJUnitReporter.prototype.getTestsuiteData = function(suite) {
   var _attr =  {
     name: this._generateSuiteTitle(suite),
     timestamp: this._Date.now(),
-    tests: suite.tests.length
+    tests: suite.tests ? suite.tests.length : 0
   };
   var testSuite = { testsuite: [ { _attr: _attr } ] };
 
@@ -331,7 +347,8 @@ MochaJUnitReporter.prototype.getTestcaseData = function(test, err) {
         name: flipClassAndName ? classname : name,
         time: (typeof test.duration === 'undefined') ? 0 : test.duration / 1000,
         classname: flipClassAndName ? name : classname
-      }
+      },
+      _file: test.file
     }]
   };
 
@@ -450,15 +467,11 @@ MochaJUnitReporter.prototype.getXml = function(testsuites) {
   var totalTests = 0;
   var stats = this._runner.stats;
   var antMode = this._options.antMode;
-  var hasProperties = (!!this._options.properties) || antMode;
   var Date = this._Date;
 
-  testsuites.forEach(function(suite) {
+  for (const suite of testsuites) {
     var _suiteAttr = suite.testsuite[0]._attr;
-    // testsuite is an array: [attrs, properties?, testcase, testcase, …]
-    // we want to make sure that we are grabbing test cases at the correct index
-    var _casesIndex = hasProperties ? 2 : 1;
-    var _cases = suite.testsuite.slice(_casesIndex);
+    var _cases = getTestSuiteCases(suite.testsuite, this._options);
     var missingProps;
 
     // suiteTime has unrounded time as a Number of milliseconds
@@ -498,7 +511,7 @@ MochaJUnitReporter.prototype.getXml = function(testsuites) {
     }
 
     totalTests += _suiteAttr.tests;
-  });
+  }
 
 
   if (!antMode) {
